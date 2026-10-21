@@ -16,7 +16,7 @@ TFS = ["TF 01", "TF 02"]
 NOTAS = PROVAS + TFS
 OBRIGATORIAS = ["Nome", "R.A"] + NOTAS
 
-# Notas dos arquivos vem de 0 a 10.
+# Notas dos arquivos vem de 0 a 10. Nota acima de 10 vale 10.
 # Prova = media(NOTA 01, NOTA 02) x 0,8 (vale 8)
 # TF = media(TF 01, TF 02) x 0,2 (vale 2)
 # Media final = Prova + TF ; aprovado se >= 7
@@ -156,7 +156,7 @@ def carregar_dados():
             erros.append(arquivo.name + ": " + str(e))
 
     if not tabelas:
-        return pd.DataFrame(), len(arquivos), erros, 0, pd.DataFrame()
+        return pd.DataFrame(), len(arquivos), erros, 0, pd.DataFrame(), pd.DataFrame()
 
     df = pd.concat(tabelas, ignore_index=True)
     df["Nome"] = df["Nome"].fillna("").astype(str).str.strip()
@@ -176,16 +176,26 @@ def carregar_dados():
     df = df.drop_duplicates(subset="R.A", keep="last").reset_index(drop=True)
     duplicados = antes - len(df)
 
-    # Notas fora de 0 a 10 sao desconsideradas (aluno fica Incompleto) e listadas
-    linhas_invalidas = []
+    # Nota acima de 10 vale 10 (regra do professor). Nota negativa e desconsiderada.
+    limitadas = []
     for n in NOTAS:
-        mask = (df[n] > NOTA_BASE + 1e-9) | (df[n] < 0)
+        mask = df[n] > NOTA_BASE + 1e-9
         for i in df.index[mask]:
-            linhas_invalidas.append(
+            limitadas.append(
+                {"Nome": df.at[i, "Nome"], "R.A": df.at[i, "R.A"], "Campo": n, "Valor no arquivo": df.at[i, n], "Considerado": NOTA_BASE}
+            )
+        df.loc[mask, n] = NOTA_BASE
+    limitadas = pd.DataFrame(limitadas)
+
+    negativas = []
+    for n in NOTAS:
+        mask = df[n] < 0
+        for i in df.index[mask]:
+            negativas.append(
                 {"Nome": df.at[i, "Nome"], "R.A": df.at[i, "R.A"], "Campo": n, "Valor no arquivo": df.at[i, n]}
             )
         df.loc[mask, n] = float("nan")
-    invalidos = pd.DataFrame(linhas_invalidas)
+    negativas = pd.DataFrame(negativas)
 
     df["Média provas"] = df[PROVAS].sum(axis=1, min_count=2) / 2
     df["Média TFs"] = df[TFS].sum(axis=1, min_count=2) / 2
@@ -196,7 +206,7 @@ def carregar_dados():
         lambda m: "Incompleto" if pd.isna(m)
         else ("Aprovado" if m >= MEDIA_APROVACAO else "Reprovado")
     )
-    return df, len(arquivos), erros, duplicados, invalidos
+    return df, len(arquivos), erros, duplicados, limitadas, negativas
 
 
 def cor_situacao(valor):
@@ -392,7 +402,7 @@ def tela_consulta(df):
     st.markdown("#### Notas lançadas (0 a 10)")
     cartoes = "".join(html_nota(n, aluno[n], NOTA_BASE, medias_cols[n]) for n in NOTAS)
     mostrar_html('<div class="nt-grade">' + cartoes + "</div>")
-    st.caption("Verde: nota igual ou acima de 7. A aprovação depende da média final (Prova + TF), não de cada nota isolada.")
+    st.caption("Verde: nota igual ou acima de 7. Notas acima de 10 são consideradas 10. A aprovação depende da média final (Prova + TF), não de cada nota isolada.")
 
     p1, p2 = fmt_nota(aluno["NOTA 01"]), fmt_nota(aluno["NOTA 02"])
     t1, t2 = fmt_nota(aluno["TF 01"]), fmt_nota(aluno["TF 02"])
@@ -434,7 +444,7 @@ def tela_consulta(df):
 def tela_aprovacao(df):
     st.subheader("Aprovados e reprovados")
     st.caption(
-        "Notas de 0 a 10. Prova = média(NOTA 01, NOTA 02) × 0,8 (vale 8). "
+        "Notas de 0 a 10 (acima de 10 vale 10). Prova = média(NOTA 01, NOTA 02) × 0,8 (vale 8). "
         "TF = média(TF 01, TF 02) × 0,2 (vale 2). "
         "Média final = Prova + TF. 7,0 ou mais = aprovado."
     )
@@ -495,7 +505,7 @@ def principal():
     if st.sidebar.button("Recarregar dados"):
         st.rerun()
 
-    df, qtd_arquivos, erros, duplicados, invalidos = carregar_dados()
+    df, qtd_arquivos, erros, duplicados, limitadas, negativas = carregar_dados()
 
     st.sidebar.write("Arquivos na pasta: " + str(qtd_arquivos))
     st.sidebar.write("Alunos carregados: " + str(len(df)))
@@ -507,12 +517,18 @@ def principal():
         for e in erros:
             st.write(e)
 
-    if not invalidos.empty:
+    if not limitadas.empty:
         with st.expander(
-            "⚠️ " + str(len(invalidos)) + " nota(s) fora da faixa de 0 a 10 foram desconsideradas "
+            "ℹ️ " + str(len(limitadas)) + " nota(s) acima de 10 foram consideradas como 10. Clique para ver quais."
+        ):
+            st.dataframe(limitadas, width="stretch", hide_index=True)
+
+    if not negativas.empty:
+        with st.expander(
+            "⚠️ " + str(len(negativas)) + " nota(s) negativas foram desconsideradas "
             "(o aluno aparece como Incompleto). Clique para ver quais."
         ):
-            st.dataframe(invalidos, width="stretch", hide_index=True)
+            st.dataframe(negativas, width="stretch", hide_index=True)
 
     aba1, aba2, aba3 = st.tabs(["Consultar aluno", "Aprovação", "Enviar arquivos"])
 
